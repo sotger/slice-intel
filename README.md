@@ -5,6 +5,11 @@
 <h1 align="center">Slice</h1>
 
 <p align="center">
+  <strong>Unofficial Intel (x86_64) fork</strong> — a modified snapshot with an Intel build fix.
+  See <a href="INTEL.md">INTEL.md</a> for what changed and how to build. Not affiliated with the Slice author.
+</p>
+
+<p align="center">
   A native screen recorder and video editor for Mac.<br>
   Free, no account, and everything stays on your Mac.
 </p>

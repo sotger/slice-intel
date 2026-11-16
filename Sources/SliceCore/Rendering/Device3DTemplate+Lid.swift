@@ -54,7 +54,7 @@ extension Device3DTemplate {
         for node in meshes {
             guard let geometry = node.geometry, let points = points(of: node, in: root), !points.isEmpty else { continue }
             let triangles = geometry.elements.map { e in
-                e.primitiveType == .triangles ? triangles(of: e).filter { $0.allSatisfy { $0 < points.count } } : []
+                e.primitiveType == .triangles ? Device3DTemplate.triangles(of: e).filter { $0.allSatisfy { $0 < points.count } } : []
             }
             var parent = Array(0 ..< points.count)
             func find(_ x: Int) -> Int {
