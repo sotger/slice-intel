@@ -92,10 +92,12 @@ extension EditorModel {
         if old.transitionWindows != project.transitionWindows { loadTransitionStills() }
         if !editChanged {
             if old.musicPlacements != project.musicPlacements || old.cursor.clickSound != project.cursor.clickSound
-                || old.keystrokes.sound != project.keystrokes.sound {
+                || old.keystrokes.sound != project.keystrokes.sound
+                || old.audioTrackShape != project.audioTrackShape {
                 scheduleMusicRebuild()
             } else if old.music != project.music || old.audio != project.audio || old.micVolume != project.micVolume
                 || old.screenAudioVolume != project.screenAudioVolume
+                || old.audioTracks != project.audioTracks
                 || old.cursor.clickSoundVolume != project.cursor.clickSoundVolume
                 || old.keystrokes.soundVolume != project.keystrokes.soundVolume
                 || (clipsChanged && old.clips.map(\.speech) != project.clips.map(\.speech)) {

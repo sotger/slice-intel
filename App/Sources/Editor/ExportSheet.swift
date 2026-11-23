@@ -38,6 +38,9 @@ struct ExportSheet: View {
                 }
             }
             HStack {
+                Button("Audio stems…") { chooseStemsFolder() }
+                    .help("Write the microphone, the app sound, the music and each imported track as separate WAV files, "
+                        + "lined up with the edit")
                 Spacer()
                 Button("Cancel") { dismiss() }
                 Button(allShapes ? "Export 3 Files…" : "Export…") { allShapes ? chooseFolderAndExport() : chooseAndExport() }
@@ -59,6 +62,18 @@ struct ExportSheet: View {
         guard panel.runModal() == .OK, let folder = panel.url else { return }
         dismiss()
         editor.startBatchExport(in: folder)
+    }
+
+    private func chooseStemsFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Export Stems"
+        panel.message = "Choose where to write the audio stems (WAV, 48 kHz, aligned with the edit)."
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        dismiss()
+        editor.exportAudioStems(to: folder)
     }
 
     private func chooseAndExport() {

@@ -40,6 +40,7 @@ extension EditorModel {
             player.replaceCurrentItem(with: item)
             if project.music != snapshot.music || project.audio != snapshot.audio || project.micVolume != snapshot.micVolume
                 || project.screenAudioVolume != snapshot.screenAudioVolume
+                || project.audioTracks != snapshot.audioTracks
                 || project.cursor.clickSoundVolume != snapshot.cursor.clickSoundVolume
                 || project.keystrokes.soundVolume != snapshot.keystrokes.soundVolume
                 || project.clips.map(\.speech) != snapshot.clips.map(\.speech) {

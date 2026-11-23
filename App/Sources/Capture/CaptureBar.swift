@@ -263,8 +263,24 @@ struct CaptureBar: View {
         }
     }
 
+    @MainActor
     func record(_ picked: CaptureSource? = nil) async {
         guard let source = picked ?? source, !starting else { return }
+        // A picked app can have quit or lost its driver since Options was set; ask what to record instead of
+        // starting a take whose sound the user can't predict.
+        if screenAudio, kind != .device, !audioApp.isEmpty,
+           let content = try? await SourceResolver.shareableContent(),
+           !content.applications.contains(where: { $0.bundleIdentifier == audioApp }) {
+            switch askForAudioSource(missing: audioAppName.isEmpty ? audioApp : audioAppName, among: content) {
+            case .cancel: return
+            case .all:
+                audioApp = ""
+                audioAppName = ""
+            case let .app(id, name):
+                audioApp = id
+                audioAppName = name
+            }
+        }
         starting = true
         cameraPreview.stop()
         micPreview.stop()

@@ -27,6 +27,131 @@ struct MusicLaneContent: View {
     }
 }
 
+struct AudioTrackLaneContent: View {
+    @ObservedObject var editor: EditorModel
+    let track: AudioTrack
+    let pps: CGFloat
+    let height: CGFloat
+    let width: CGFloat
+
+    var body: some View {
+        if track.clips.isEmpty {
+            Button { editor.chooseAudioFiles(into: track.id) } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "waveform")
+                    Text("Empty track — add an audio file")
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: width, height: height)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.12), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+            }
+            .buttonStyle(.plain)
+            .help("Put an audio file on \(track.name)")
+        } else {
+            ForEach(track.clips) { clip in
+                AudioClipBlock(clip: clip, duration: editor.duration, url: editor.audioURL(clip.source),
+                               muted: track.muted, trackVolume: track.volume, pps: pps, height: height,
+                               move: { editor.moveAudioClip(track.id, clip.id, to: $0) },
+                               trim: { start, end in editor.trimAudioClip(track.id, clip.id, start: start, end: end) },
+                               remove: { editor.removeAudioClip(track: track.id, clip: clip.id) })
+            }
+        }
+    }
+}
+
+/// An imported file on its own track: a lavalier recording, a second take. Drag to move, drag the edges to trim.
+struct AudioClipBlock: View {
+    let clip: AudioClip
+    let duration: Double
+    let url: URL?
+    let muted: Bool
+    let trackVolume: Double
+    let pps: CGFloat
+    let height: CGFloat
+    let move: (Double) -> Void
+    let trim: (Double?, Double?) -> Void
+    let remove: () -> Void
+
+    @ObservedObject private var summaries = AudioSummaries.shared
+    @State private var origin: (start: Double, end: Double)?
+    @State private var hovering = false
+
+    var body: some View {
+        let end = min(clip.end, max(duration, clip.start))
+        let width = max((end - clip.start) * pps, 6)
+        let missing = url == nil
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        let tint = missing ? Color.orange : Theme.voice
+        shape
+            .fill(LinearGradient(colors: [tint.opacity(hovering ? 0.75 : 0.6), tint.opacity(hovering ? 0.6 : 0.45)],
+                                 startPoint: .top, endPoint: .bottom))
+            .overlay { waveform.clipShape(shape).opacity(muted ? 0.35 : 1) }
+            .overlay(shape.strokeBorder(Color.white.opacity(hovering ? 0.3 : 0.12), lineWidth: 1))
+            .overlay(alignment: .topLeading) {
+                if width > 56 { label(missing: missing).padding(.leading, 10).padding(.top, 5).allowsHitTesting(false) }
+            }
+            .overlay(alignment: .leading) { handle(leading: true) }
+            .overlay(alignment: .trailing) { handle(leading: false) }
+            .frame(width: width, height: height)
+            .offset(x: clip.start * pps)
+            .onHover { hovering = $0 }
+            .animation(Theme.hover, value: hovering)
+            .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .global)
+                .onChanged { v in
+                    if origin == nil { origin = (clip.start, clip.end) }
+                    move(origin!.start + v.translation.width / pps)
+                }
+                .onEnded { _ in origin = nil })
+            .contextMenu {
+                Button("Remove from track", role: .destructive) { remove() }
+            }
+            .task(id: url) { if let url { _ = await summaries.load(url) } }
+            .help(missing ? "\(clip.name) is missing" : "\(clip.name) — drag to move, drag the edges to trim")
+    }
+
+    private func label(missing: Bool) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: missing ? "exclamationmark.triangle.fill" : muted ? "speaker.slash.fill" : "waveform")
+            Text(missing ? "\(clip.name) · missing" : clip.name)
+        }
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(.white.opacity(0.9))
+        .lineLimit(1)
+        .shadow(color: .black.opacity(0.3), radius: 2)
+    }
+
+    private var waveform: some View {
+        let summary = url.flatMap { summaries.summaries[$0] }
+        return Canvas { ctx, size in
+            guard let summary else { return }
+            let mid = size.height / 2
+            let gain = muted ? 0 : clip.volume * trackVolume
+            var x: CGFloat = 1.5
+            var bars = Path()
+            while x < size.width - 1 {
+                let level = pow(Double(summary.level(at: clip.offset + Double(x) / Double(pps))), 0.6) * gain
+                let h = max(CGFloat(level) * (size.height - 14), 1)
+                bars.addRoundedRect(in: CGRect(x: x - 0.75, y: mid - h / 2, width: 1.5, height: h),
+                                    cornerSize: CGSize(width: 0.75, height: 0.75))
+                x += 3
+            }
+            ctx.fill(bars, with: .color(.white.opacity(0.55)))
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func handle(leading: Bool) -> some View {
+        EdgeHandle(visible: hovering) { dx in
+            if origin == nil { origin = (clip.start, clip.end) }
+            let dt = dx / pps
+            if leading { trim(origin!.start + dt, nil) } else { trim(nil, origin!.end + dt) }
+        } onEnded: { origin = nil }
+        .help(leading ? "Drag to trim the start" : "Drag to trim the end")
+    }
+}
+
 struct MusicBlock: View {
     let clip: MusicClip
     let duration: Double

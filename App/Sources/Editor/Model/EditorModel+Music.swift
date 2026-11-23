@@ -202,6 +202,89 @@ extension EditorModel {
         pause()
         audition.play(source, url: url)
     }
+
+    // MARK: - Imported audio tracks
+
+    func audioURL(_ source: String) -> URL? {
+        let url = bundle.file(source)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    func chooseAudioTrackFiles() { chooseAudioFiles(into: nil) }
+
+    /// `track` is where the files go; nil puts each one on a new track.
+    func chooseAudioFiles(into track: UUID?) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = true
+        panel.message = "Choose audio to add as a track: a lavalier recording, a second take, a call. "
+            + "It's copied into the project, so moving the original won't break it."
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        let urls = panel.urls
+        Task { await importAudioTracks(urls, into: track) }
+    }
+
+    func addEmptyAudioTrack() {
+        let taken = Set(project.audioTracks.map(\.name))
+        var n = project.audioTracks.count + 1
+        while taken.contains("Track \(n)") { n += 1 }
+        project.audioTracks.append(AudioTrack(name: "Track \(n)"))
+        saveNow()
+    }
+
+    func importAudioTracks(_ urls: [URL], into track: UUID? = nil) async {
+        let bundle = bundle
+        for url in urls {
+            do {
+                let rel = try await Task.detached(priority: .userInitiated) { try bundle.importAudio(from: url) }.value
+                let length = await Task.detached(priority: .userInitiated) {
+                    AudioAnalysis.duration(of: bundle.file(rel))
+                }.value
+                guard let length, length > AudioClip.minLength else {
+                    audioError = "\(url.lastPathComponent) couldn't be read as audio."
+                    continue
+                }
+                let name = url.deletingPathExtension().lastPathComponent
+                if let track, let i = project.audioTracks.firstIndex(where: { $0.id == track }) {
+                    let start = project.audioTracks[i].clips.map(\.end).max() ?? 0
+                    let end = duration > start + AudioClip.minLength ? min(start + length, duration) : start + length
+                    let clip = AudioClip(source: rel, name: name, start: start, end: end, sourceDuration: length)
+                    project.audioTracks[i].clips.append(clip)
+                } else {
+                    let end = duration > AudioClip.minLength ? min(length, duration) : length
+                    let clip = AudioClip(source: rel, name: name, start: 0, end: end, sourceDuration: length)
+                    project.audioTracks.append(AudioTrack(name: name, clips: [clip]))
+                }
+            } catch {
+                audioError = "Couldn't import \(url.lastPathComponent): \(error.localizedDescription)"
+            }
+        }
+        importedAudio = bundle.importedAudio()
+        saveNow()
+    }
+
+    func updateAudioTrack(_ id: UUID, _ change: (inout AudioTrack) -> Void) {
+        guard let i = project.audioTracks.firstIndex(where: { $0.id == id }) else { return }
+        change(&project.audioTracks[i])
+    }
+
+    func removeAudioTrack(_ id: UUID) {
+        project.audioTracks.removeAll { $0.id == id }
+    }
+
+    func removeAudioClip(track id: UUID, clip: UUID) {
+        guard let i = project.audioTracks.firstIndex(where: { $0.id == id }) else { return }
+        project.audioTracks[i].clips.removeAll { $0.id == clip }
+        if project.audioTracks[i].clips.isEmpty { project.audioTracks.remove(at: i) }
+    }
+
+    func moveAudioClip(_ track: UUID, _ clip: UUID, to start: Double) {
+        project.moveAudioClip(track, clip: clip, to: start)
+    }
+
+    func trimAudioClip(_ track: UUID, _ clip: UUID, start: Double? = nil, end: Double? = nil) {
+        project.trimAudioClip(track, clip: clip, start: start, end: end)
+    }
 }
 
 @MainActor

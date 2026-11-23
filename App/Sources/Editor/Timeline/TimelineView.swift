@@ -12,7 +12,7 @@ struct TimelineView: View {
     @ObservedObject var editor: EditorModel
     @Binding var zoom: Double
 
-    private let gutter: CGFloat = 48
+    private let gutter: CGFloat = 92
     private let rulerHeight: CGFloat = 26
     private let clipHeight: CGFloat = 46
     private let rowHeight: CGFloat = 38
@@ -25,143 +25,268 @@ struct TimelineView: View {
     @State private var scroll = ScrollPosition()
     @State private var scrollX: CGFloat = 0
     @State private var pinchStart: Double?
+    /// Whether the takes row shows the microphone and app audio rows under it.
+    @AppStorage("timeline.takesExpanded") private var takesExpanded = true
 
     static let zoomRange: ClosedRange<Double> = 1 ... 10
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: spacing) {
-                Color.clear.frame(height: rulerHeight)
-                GutterButton(symbol: "film", hoverSymbol: "scissors", help: "Split the clip at the playhead (⌘B)") {
-                    editor.splitAtPlayhead()
-                }
-                .frame(height: clipHeight)
-                GutterButton(symbol: "person.crop.rectangle", hoverSymbol: "plus", help: "Add a camera layout at the playhead") {
-                    editor.addCameraBlock(at: editor.time)
-                }
-                .frame(height: rowHeight)
-                GutterButton(symbol: "plus.magnifyingglass", hoverSymbol: "plus", help: "Add a zoom at the playhead") {
-                    editor.addZoomBlock(at: editor.time)
-                }
-                .frame(height: rowHeight)
-                GutterButton(symbol: "eye.slash", hoverSymbol: "plus", help: "Blur part of the screen at the playhead") {
-                    editor.addRedaction(at: editor.time)
-                }
-                .frame(height: rowHeight)
-                GutterButton(symbol: SpotlightLane.symbol, hoverSymbol: "plus", help: "Add a spotlight at the playhead") {
-                    editor.addSpotlight(at: editor.time)
-                }
-                .frame(height: rowHeight)
-                if editor.hasAnnotations {
-                    GutterButton(symbol: AnnotationLane.symbol, hoverSymbol: "cursorarrow.click", help: "Select the drawing at the playhead") {
-                        editor.selectAnnotation(near: editor.time)
-                    }
-                    .frame(height: rowHeight)
-                    .transition(.opacity)
-                }
-                if editor.shows3DTrack {
-                    GutterButton(symbol: "cube", hoverSymbol: "plus", help: "Add a 3D keyframe at the playhead") {
-                        withAnimation(Theme.hover) { editor.addKeyframe(at: editor.time) }
-                    }
-                    .frame(height: rowHeight)
-                    .transition(.opacity)
-                }
-                GutterButton(symbol: "music.note", hoverSymbol: "plus", help: "Add music at the playhead") {
-                    Task { await editor.addMusicClip(at: editor.time) }
-                }
-                .frame(height: rowHeight)
-            }
-            .frame(width: gutter)
-
-            GeometryReader { geo in
-                let width = max(geo.size.width * zoom - inset * 2, 10)
-                let pps = width / max(editor.duration, 0.1)
-                ScrollView(.horizontal) {
-                    ZStack(alignment: .topLeading) {
-                        VStack(alignment: .leading, spacing: spacing) {
-                            Ruler(duration: editor.duration, pps: pps)
-                                .frame(height: rulerHeight)
-                                .contentShape(Rectangle())
-                                .gesture(scrub(pps: pps))
-                            takesRow(pps: pps)
-                            track(.camera, pps: pps, empty: editor.project.cameraBlocks.isEmpty) {
-                                ForEach(editor.project.cameraBlocks) { b in
-                                    BlockView(title: "Camera", color: Theme.camera, start: b.start, end: b.end, pps: pps, height: rowHeight,
-                                              selected: editor.selection == .camera(b.id),
-                                              select: { editor.selection = .camera(b.id) },
-                                              setRange: { editor.setCameraBlockRange(b.id, start: $0, end: $1) }) {
-                                        Label(label(for: b.layout), systemImage: "person.crop.rectangle")
+        GeometryReader { geo in
+            let viewport = max(geo.size.width - gutter, 10)
+            let width = max(viewport * zoom - inset * 2, 10)
+            let pps = width / max(editor.duration, 0.1)
+            let height = contentHeight
+            ScrollView(.vertical) {
+                HStack(alignment: .top, spacing: 0) {
+                    gutterColumn
+                    ScrollView(.horizontal) {
+                        ZStack(alignment: .topLeading) {
+                            VStack(alignment: .leading, spacing: spacing) {
+                                Ruler(duration: editor.duration, pps: pps)
+                                    .frame(height: rulerHeight)
+                                    .contentShape(Rectangle())
+                                    .gesture(scrub(pps: pps))
+                                takesRow(pps: pps)
+                                if takesExpanded {
+                                    sourceRow(.mic, pps: pps)
+                                    sourceRow(.app, pps: pps)
+                                }
+                                track(.camera, pps: pps, empty: editor.project.cameraBlocks.isEmpty) {
+                                    ForEach(editor.project.cameraBlocks) { b in
+                                        BlockView(title: "Camera", color: Theme.camera, start: b.start, end: b.end, pps: pps, height: rowHeight,
+                                                  selected: editor.selection == .camera(b.id),
+                                                  select: { editor.selection = .camera(b.id) },
+                                                  setRange: { editor.setCameraBlockRange(b.id, start: $0, end: $1) }) {
+                                            Label(label(for: b.layout), systemImage: "person.crop.rectangle")
+                                        }
                                     }
                                 }
-                            }
-                            track(.zoom, pps: pps, empty: editor.project.zoomBlocks.isEmpty) {
-                                ForEach(editor.project.zoomBlocks) { b in
-                                    BlockView(title: "Zoom", color: Theme.zoom, start: b.start, end: b.end, pps: pps, height: rowHeight,
-                                              selected: editor.selection == .zoom(b.id),
-                                              select: { editor.selection = .zoom(b.id) },
-                                              setRange: { editor.setZoomBlockRange(b.id, start: $0, end: $1) }) {
-                                        HStack(spacing: 6) {
-                                            HStack(spacing: 3) {
-                                                Image(systemName: b.kind == .liquidGlass ? "drop" : "plus.magnifyingglass")
-                                                if b.kind == .liquidGlass { Text("Glass") }
-                                                Text(String(format: "%.1f×", b.scale))
-                                                    .contentTransition(.numericText(value: b.scale))
-                                                    .animation(.snappy, value: b.scale)
-                                            }
-                                            if b.isAuto {
+                                track(.zoom, pps: pps, empty: editor.project.zoomBlocks.isEmpty) {
+                                    ForEach(editor.project.zoomBlocks) { b in
+                                        BlockView(title: "Zoom", color: Theme.zoom, start: b.start, end: b.end, pps: pps, height: rowHeight,
+                                                  selected: editor.selection == .zoom(b.id),
+                                                  select: { editor.selection = .zoom(b.id) },
+                                                  setRange: { editor.setZoomBlockRange(b.id, start: $0, end: $1) }) {
+                                            HStack(spacing: 6) {
                                                 HStack(spacing: 3) {
-                                                    Image(systemName: "cursorarrow.rays")
-                                                    Text("Auto")
+                                                    Image(systemName: b.kind == .liquidGlass ? "drop" : "plus.magnifyingglass")
+                                                    if b.kind == .liquidGlass { Text("Glass") }
+                                                    Text(String(format: "%.1f×", b.scale))
+                                                        .contentTransition(.numericText(value: b.scale))
+                                                        .animation(.snappy, value: b.scale)
+                                                }
+                                                if b.isAuto {
+                                                    HStack(spacing: 3) {
+                                                        Image(systemName: "cursorarrow.rays")
+                                                        Text("Auto")
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
-                            }
-                            track(.blur, pps: pps, empty: editor.project.redactions.isEmpty) {
-                                RedactLaneContent(editor: editor, pps: pps, height: rowHeight)
-                            }
-                            track(.spotlight, pps: pps, empty: editor.project.spotlights.isEmpty) {
-                                SpotlightLane(editor: editor, pps: pps, height: rowHeight)
-                            }
-                            if editor.hasAnnotations {
-                                track(.annotate, pps: pps, empty: false) {
-                                    AnnotationLane(editor: editor, pps: pps, height: rowHeight)
+                                track(.blur, pps: pps, empty: editor.project.redactions.isEmpty) {
+                                    RedactLaneContent(editor: editor, pps: pps, height: rowHeight)
                                 }
-                                .transition(.opacity)
-                            }
-                            if editor.shows3DTrack {
-                                KeyframeLane(editor: editor, pps: pps, height: rowHeight)
+                                track(.spotlight, pps: pps, empty: editor.project.spotlights.isEmpty) {
+                                    SpotlightLane(editor: editor, pps: pps, height: rowHeight)
+                                }
+                                if editor.hasAnnotations {
+                                    track(.annotate, pps: pps, empty: false) {
+                                        AnnotationLane(editor: editor, pps: pps, height: rowHeight)
+                                    }
                                     .transition(.opacity)
+                                }
+                                if editor.shows3DTrack {
+                                    KeyframeLane(editor: editor, pps: pps, height: rowHeight)
+                                        .transition(.opacity)
+                                }
+                                track(.music, pps: pps, empty: editor.project.music.isEmpty) {
+                                    MusicLaneContent(editor: editor, pps: pps, height: rowHeight)
+                                }
+                                ForEach(editor.project.audioTracks) { audio in
+                                    audioTrackRow(audio, pps: pps, width: width)
+                                        .transition(.opacity)
+                                }
                             }
-                            track(.music, pps: pps, empty: editor.project.music.isEmpty) {
-                                MusicLaneContent(editor: editor, pps: pps, height: rowHeight)
+                            GhostPlayhead(pointer: pointer, clock: editor.clock, pps: pps, height: height)
+                            PlayheadTrack(editor: editor, clock: editor.clock, pps: pps, height: height)
+                        }
+                        .frame(width: width, alignment: .leading)
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case let .active(p): pointer.move(to: p.x)
+                            case .ended: pointer.leave()
                             }
                         }
-                        GhostPlayhead(pointer: pointer, clock: editor.clock, pps: pps, height: geo.size.height)
-                        PlayheadTrack(editor: editor, clock: editor.clock, pps: pps, height: geo.size.height)
+                        .padding(.horizontal, inset)
                     }
-                    .frame(width: width, alignment: .leading)
-                    .onContinuousHover { phase in
-                        switch phase {
-                        case let .active(p): pointer.move(to: p.x)
-                        case .ended: pointer.leave()
-                        }
-                    }
-                    .padding(.horizontal, inset)
+                    .scrollIndicators(.never)
+                    .scrollDisabled(zoom <= 1.01)
+                    .scrollPosition($scroll)
+                    .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.x } action: { _, x in scrollX = x }
+                    .simultaneousGesture(pinch(viewport: viewport))
+                    .frame(width: viewport, height: height)
                 }
-                .scrollIndicators(.never)
-                .scrollDisabled(zoom <= 1.01)
-                .scrollPosition($scroll)
-                .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.x } action: { _, x in scrollX = x }
-                .simultaneousGesture(pinch(viewport: geo.size.width))
+                .frame(minHeight: geo.size.height, alignment: .top)
             }
+            .scrollIndicators(.automatic)
         }
         .padding(.top, 8)
         .padding(.bottom, 12)
         .padding(.trailing, 10)
         .background(Theme.window)
         .overlay(alignment: .top) { Rectangle().fill(Theme.stroke).frame(height: 1) }
+    }
+
+    /// Every row of the lanes column in order; the gutter mirrors it so labels stay glued to their lanes.
+    private func rowHeights() -> [CGFloat] {
+        var rows: [CGFloat] = [rulerHeight, clipHeight]
+        if takesExpanded { rows += [rowHeight, rowHeight] }
+        rows += [rowHeight, rowHeight, rowHeight, rowHeight]
+        if editor.hasAnnotations { rows.append(rowHeight) }
+        if editor.shows3DTrack { rows.append(rowHeight) }
+        rows.append(rowHeight) // music
+        rows += Array(repeating: rowHeight, count: editor.project.audioTracks.count)
+        return rows
+    }
+
+    private var contentHeight: CGFloat {
+        let rows = rowHeights()
+        return rows.reduce(0, +) + spacing * CGFloat(max(rows.count - 1, 0))
+    }
+
+    private var gutterColumn: some View {
+        VStack(spacing: spacing) {
+            Color.clear.frame(height: rulerHeight)
+            header("Takes", icon: "film", actionSymbol: "scissors", help: "Split the clip at the playhead (⌘B)",
+                   height: clipHeight,
+                   disclosure: takesExpanded, toggle: { withAnimation(Theme.swap) { takesExpanded.toggle() } },
+                   run: { editor.splitAtPlayhead() })
+            if takesExpanded {
+                header("Mic", icon: "mic",
+                       actionSymbol: editor.project.micVolume > 0 ? "speaker.wave.2" : "speaker.slash",
+                       help: editor.project.micVolume > 0 ? "Mute the microphone" : "Unmute the microphone",
+                       extraSymbol: "sparkles",
+                       extraHelp: editor.project.voice.enhance ? "Turn off the voice effects" : "Enhance the voice (denoise, EQ, compressor)",
+                       extraRun: { editor.project.voice.enhance.toggle() },
+                       run: { editor.project.micVolume = editor.project.micVolume > 0 ? 0 : 1 })
+            header("App audio", icon: "speaker.wave.2",
+                   actionSymbol: editor.project.screenAudioVolume > 0 ? "speaker.wave.2" : "speaker.slash",
+                   help: editor.project.screenAudioVolume > 0 ? "Mute the app sound" : "Unmute the app sound") {
+                    editor.project.screenAudioVolume = editor.project.screenAudioVolume > 0 ? 0 : 1
+                }
+            }
+            header("Camera", icon: "person.crop.rectangle", actionSymbol: "plus", help: "Add a camera layout at the playhead") {
+                editor.addCameraBlock(at: editor.time)
+            }
+            header("Zoom", icon: "plus.magnifyingglass", actionSymbol: "plus", help: "Add a zoom at the playhead") {
+                editor.addZoomBlock(at: editor.time)
+            }
+            header("Blur", icon: "eye.slash", actionSymbol: "plus", help: "Blur part of the screen at the playhead") {
+                editor.addRedaction(at: editor.time)
+            }
+            header("Spotlight", icon: SpotlightLane.symbol, actionSymbol: "plus", help: "Add a spotlight at the playhead") {
+                editor.addSpotlight(at: editor.time)
+            }
+            if editor.hasAnnotations {
+                header("Notes", icon: AnnotationLane.symbol, actionSymbol: "cursorarrow.click",
+                       help: "Select the drawing at the playhead") {
+                    editor.selectAnnotation(near: editor.time)
+                }
+                .transition(.opacity)
+            }
+            if editor.shows3DTrack {
+                header("3D", icon: "cube", actionSymbol: "plus", help: "Add a 3D keyframe at the playhead") {
+                    withAnimation(Theme.hover) { editor.addKeyframe(at: editor.time) }
+                }
+                .transition(.opacity)
+            }
+            header("Music", icon: "music.note", actionSymbol: "plus", help: "Add music at the playhead") {
+                Task { await editor.addMusicClip(at: editor.time) }
+            }
+            ForEach(editor.project.audioTracks) { track in
+                audioHeader(track)
+            }
+        }
+        .frame(width: gutter)
+    }
+
+    private func header(_ title: String, icon: String, actionSymbol: String? = nil, help: String = "",
+                        height: CGFloat? = nil,
+                        extraSymbol: String? = nil, extraHelp: String = "", extraRun: (() -> Void)? = nil,
+                        disclosure: Bool? = nil, toggle: (() -> Void)? = nil,
+                        run: (() -> Void)? = nil) -> some View {
+        HStack(spacing: 4) {
+            if let disclosure, let toggle {
+                Button(action: toggle) {
+                    Image(systemName: disclosure ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 7, weight: .bold))
+                        .frame(width: 8)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(disclosure ? "Collapse" : "Expand")
+            }
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 12)
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+            Spacer(minLength: 0)
+            if let extraSymbol, let extraRun {
+                Button(action: extraRun) {
+                    Image(systemName: extraSymbol).font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(extraHelp)
+                .accessibilityLabel(extraHelp)
+            }
+            if let actionSymbol, let run {
+                Button(action: run) {
+                    Image(systemName: actionSymbol).font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(help)
+                .accessibilityLabel(help)
+            }
+        }
+        .padding(.horizontal, 2)
+        .frame(height: height ?? rowHeight)
+    }
+
+    private func audioHeader(_ track: AudioTrack) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "waveform")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 12)
+            Text(track.name)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+            Menu {
+                Button("Import into this track…") { editor.chooseAudioFiles(into: track.id) }
+                Button("Remove track", role: .destructive) { editor.removeAudioTrack(track.id) }
+            } label: {
+                Image(systemName: "ellipsis").font(.system(size: 10, weight: .semibold))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .foregroundStyle(.secondary)
+            .help("Track options")
+        }
+        .padding(.horizontal, 3)
+        .frame(height: rowHeight)
     }
 
     private func pinch(viewport: CGFloat) -> some Gesture {
@@ -300,6 +425,47 @@ struct TimelineView: View {
         .animation(.snappy(duration: 0.22), value: drag == nil)
     }
 
+    enum SourceKind { case mic, app }
+
+    /// The microphone and the app's sound as their own rows: the take's picture above, its two sources below.
+    private func sourceRow(_ kind: SourceKind, pps: CGFloat) -> some View {
+        let project = editor.project
+        let bundle = editor.bundle
+        let gain = kind == .mic ? project.micVolume : project.screenAudioVolume
+        return ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.02))
+            ForEach(project.segments.indices, id: \.self) { i in
+                let seg = project.segments[i]
+                let clip = project.clips[seg.clipIndex]
+                let audio = kind == .mic
+                    ? ClipAudio(mic: bundle.voiceFile(for: clip, settings: project.voice).map(bundle.file),
+                                screen: nil, micGain: 1, screenGain: 0)
+                    : ClipAudio(mic: nil, screen: clip.screenAudioFile.map(bundle.file), micGain: 0, screenGain: 1)
+                if !seg.isRetimed, !audio.isEmpty {
+                    ClipWaveformView(audio: audio, sourceStart: seg.sourceStart, pps: pps, strength: gain > 0 ? 0.75 : 0.12)
+                        .frame(width: max(seg.duration * pps - 1, 1), height: rowHeight)
+                        .clipped()
+                        .offset(x: seg.editedStart * pps)
+                }
+            }
+        }
+        .frame(height: rowHeight)
+        .help(kind == .mic
+            ? "The microphone. Mute it in the header; voice effects are in the Audio panel."
+            : "The sound of the apps. Mute it in the header; its volume is in the Audio panel.")
+    }
+
+    private func audioTrackRow(_ track: AudioTrack, pps: CGFloat, width: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.025))
+            AudioTrackLaneContent(editor: editor, track: track, pps: pps, height: rowHeight, width: width)
+        }
+        .frame(height: rowHeight)
+        .help("\(track.name) — imported audio. Drag the block to move it, drag its edges to trim")
+    }
+
     private func track<Content: View>(_ lane: EditorModel.TimelineLane, pps: CGFloat, empty: Bool,
                                       @ViewBuilder content: () -> Content) -> some View {
         LaneTrack(lane: lane, empty: empty, pps: pps, height: rowHeight,
@@ -340,5 +506,32 @@ private struct SectionKey: Identifiable {
     init(index: Int, clip: UUID, start: Double) {
         self.index = index
         id = ID(clip: clip, start: start)
+    }
+}
+
+/// The grabber between the preview and the timeline: drag it to trade height between them, double-click to reset.
+struct TimelineSplitter: View {
+    @Binding var height: Double
+    @State private var start: Double?
+
+    var body: some View {
+        ZStack {
+            Color.clear
+            Capsule()
+                .fill(Color.white.opacity(0.12))
+                .frame(width: 46, height: 3)
+        }
+        .frame(height: 9)
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .pointerStyle(.rowResize)
+        .gesture(DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                if start == nil { start = height }
+                height = min(max((start ?? height) - Double(value.translation.height), 170), 1000)
+            }
+            .onEnded { _ in start = nil })
+        .onTapGesture(count: 2) { height = 334 }
+        .help("Drag to change the timeline height — double-click to reset")
     }
 }

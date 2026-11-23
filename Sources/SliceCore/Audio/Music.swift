@@ -125,6 +125,163 @@ public struct MusicPiece: Equatable {
     public var end: Double { at + length }
 }
 
+// MARK: - Imported audio tracks
+
+/// A file placed on the timeline beside the recorded voice: a lavalier recording, a second take, a call.
+public struct AudioClip: Codable, Equatable, Identifiable {
+    public var id: UUID
+    /// Path inside the project bundle, e.g. `audio/lav.m4a`.
+    public var source: String
+    public var name: String
+    /// Where the clip starts and ends on the timeline.
+    public var start: Double
+    public var end: Double
+    /// Where playback starts in the file.
+    public var offset: Double
+    public var sourceDuration: Double
+    public var volume: Double
+    public var fadeIn: Double
+    public var fadeOut: Double
+
+    public init(id: UUID = UUID(), source: String, name: String, start: Double, end: Double, offset: Double = 0,
+                sourceDuration: Double, volume: Double = 1, fadeIn: Double = 0.02, fadeOut: Double = 0.02) {
+        self.id = id
+        self.source = source
+        self.name = name
+        self.start = start
+        self.end = end
+        self.offset = offset
+        self.sourceDuration = sourceDuration
+        self.volume = volume
+        self.fadeIn = fadeIn
+        self.fadeOut = fadeOut
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        source = try c.decode(String.self, forKey: .source)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Audio"
+        start = try c.decodeIfPresent(Double.self, forKey: .start) ?? 0
+        end = try c.decodeIfPresent(Double.self, forKey: .end) ?? 0
+        offset = try c.decodeIfPresent(Double.self, forKey: .offset) ?? 0
+        sourceDuration = try c.decodeIfPresent(Double.self, forKey: .sourceDuration) ?? 0
+        volume = try c.decodeIfPresent(Double.self, forKey: .volume) ?? 1
+        fadeIn = try c.decodeIfPresent(Double.self, forKey: .fadeIn) ?? 0.02
+        fadeOut = try c.decodeIfPresent(Double.self, forKey: .fadeOut) ?? 0.02
+    }
+
+    public static let minLength = 0.1
+    public static let minFade = 0.01
+
+    public var length: Double { end - start }
+
+    public func timelineRange(duration: Double) -> ClosedRange<Double>? {
+        let s = max(start, 0)
+        let e = min(end, duration)
+        return e - s > 0.01 ? s ... e : nil
+    }
+
+    /// Full volume inside the clip, easing in and out at its edges, silent outside.
+    public func fadeEnvelope(_ r: ClosedRange<Double>) -> GainEnvelope {
+        let len = r.upperBound - r.lowerBound
+        var fi = max(fadeIn, Self.minFade), fo = max(fadeOut, Self.minFade)
+        if fi + fo > len {
+            let k = len / (fi + fo)
+            fi *= k
+            fo *= k
+        }
+        return GainEnvelope(GainEnvelope.ramp(from: r.lowerBound, 0, to: r.lowerBound + fi, 1, curve: MusicClip.fadeCurve)
+            + GainEnvelope.ramp(from: r.upperBound - fo, 1, to: r.upperBound, 0, curve: MusicClip.fadeCurve))
+    }
+}
+
+/// A row of imported audio on the timeline, with its own volume; the mic and the screen are not tracks.
+public struct AudioTrack: Codable, Equatable, Identifiable {
+    public var id: UUID
+    public var name: String
+    public var volume: Double
+    public var muted: Bool
+    public var clips: [AudioClip]
+
+    public init(id: UUID = UUID(), name: String, volume: Double = 1, muted: Bool = false, clips: [AudioClip] = []) {
+        self.id = id
+        self.name = name
+        self.volume = volume
+        self.muted = muted
+        self.clips = clips
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Audio"
+        volume = try c.decodeIfPresent(Double.self, forKey: .volume) ?? 1
+        muted = try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false
+        clips = try c.decodeIfPresent([AudioClip].self, forKey: .clips) ?? []
+    }
+}
+
+extension Project {
+    /// What a rebuild of the player depends on: which files sit where. Volume and fades only change the mix.
+    public var audioTrackShape: [UUID: [String]] {
+        Dictionary(uniqueKeysWithValues: audioTracks.map { track in
+            (track.id, track.clips.map { "\($0.id.uuidString)|\($0.source)|\($0.start)|\($0.end)|\($0.offset)" })
+        })
+    }
+
+    /// The gain of one imported track over the edited timeline: its clips' fades, each clip's own volume, the track volume.
+    public func audioTrackEnvelope(_ track: AudioTrack) -> GainEnvelope {
+        guard !track.muted, track.volume > 0.0001 else { return .constant(0) }
+        var points: [GainEnvelope.Point] = []
+        for clip in track.clips {
+            guard let r = clip.timelineRange(duration: duration) else { continue }
+            points += clip.fadeEnvelope(r).scaled(clip.volume).points
+        }
+        guard !points.isEmpty else { return .constant(0) }
+        return GainEnvelope(points).scaled(track.volume)
+    }
+
+    public func audioGap(in track: AudioTrack, around t: Double, excluding: UUID? = nil) -> ClosedRange<Double> {
+        let d = duration
+        let others = track.clips.filter { $0.id != excluding }.compactMap { $0.timelineRange(duration: d) }
+        let lo = others.filter { $0.upperBound <= t + 1e-9 }.map(\.upperBound).max() ?? 0
+        let hi = others.filter { $0.lowerBound >= t - 1e-9 }.map(\.lowerBound).min() ?? d
+        return lo ... max(lo, hi)
+    }
+
+    public mutating func moveAudioClip(_ trackID: UUID, clip clipID: UUID, to start: Double) {
+        guard let ti = audioTracks.firstIndex(where: { $0.id == trackID }),
+              let ci = audioTracks[ti].clips.firstIndex(where: { $0.id == clipID }) else { return }
+        let clip = audioTracks[ti].clips[ci], d = duration
+        let len = clip.length
+        let space = audioGap(in: audioTracks[ti], around: clip.start + len / 2, excluding: clipID)
+        let s = max(min(start, space.upperBound - len), space.lowerBound)
+        audioTracks[ti].clips[ci].start = s
+        audioTracks[ti].clips[ci].end = s + len
+    }
+
+    public mutating func trimAudioClip(_ trackID: UUID, clip clipID: UUID, start newStart: Double? = nil,
+                                       end newEnd: Double? = nil) {
+        guard let ti = audioTracks.firstIndex(where: { $0.id == trackID }),
+              let ci = audioTracks[ti].clips.firstIndex(where: { $0.id == clipID }) else { return }
+        var clip = audioTracks[ti].clips[ci]
+        let space = audioGap(in: audioTracks[ti], around: clip.start + 0.001, excluding: clipID)
+        if let newStart {
+            let available = max(clip.sourceDuration - clip.offset, AudioClip.minLength)
+            let upper = min(clip.end - AudioClip.minLength, clip.start + available)
+            let s = min(max(newStart, max(space.lowerBound, clip.start - clip.offset)), upper)
+            clip.offset += s - clip.start
+            clip.start = s
+        }
+        if let newEnd {
+            let upper = min(space.upperBound, clip.start + max(clip.sourceDuration - clip.offset, AudioClip.minLength))
+            clip.end = max(min(newEnd, upper), clip.start + AudioClip.minLength)
+        }
+        audioTracks[ti].clips[ci] = clip
+    }
+}
+
 public struct AudioSettings: Codable, Equatable {
     public var musicVolume = 0.35
     public var musicMuted = false

@@ -22,6 +22,9 @@ struct TransportBar: View {
     var body: some View {
         HStack(spacing: 12) {
             HStack(spacing: 8) {
+                Button { editor.addEmptyAudioTrack() } label: { Image(systemName: "plus") }
+                    .buttonStyle(IconButtonStyle(size: 30, iconSize: 14))
+                    .help("Add an audio track: drop a file on it, or click it to choose one")
                 Button { editor.toggleCutting() } label: { Image(systemName: "scissors") }
                     .buttonStyle(IconButtonStyle(selected: editor.isCutting, size: 30, iconSize: 14))
                     .help(editor.isCutting ? "Stop cutting (Esc)" : "Cut tool: click a clip to split it there")

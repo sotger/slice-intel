@@ -5,6 +5,7 @@
 //  Created by rit3zh CX on 10/15/26.
 //
 
+import AppKit
 import Combine
 import SliceCore
 import SwiftUI
@@ -60,6 +61,8 @@ extension EditorModel {
         cleanUpVoices()
         pause()
         audition.stop()
+        // An empty track is a place to put things; one that stayed empty was never used.
+        project.audioTracks.removeAll { $0.clips.isEmpty }
         saveNow()
         // Aiming a zoom shows the frame unzoomed, which a fresh open wouldn't: that frame isn't kept.
         let preview = PreviewNSView.current.flatMap { $0.driver === previewDriver && !renderState.current().options.ignoreZoom ? $0 : nil }
@@ -69,6 +72,19 @@ extension EditorModel {
     }
 
     // MARK: - Export
+
+    /// Writes each source as its own PCM WAV into `folder` and shows them in Finder.
+    func exportAudioStems(to folder: URL) {
+        let project = project, bundle = bundle, cursor = cursorTrack
+        Task {
+            do {
+                let urls = try await Exporter.exportStems(project: project, bundle: bundle, cursor: cursor, to: folder)
+                NSWorkspace.shared.activateFileViewerSelecting(urls)
+            } catch {
+                audioError = "Couldn't export the audio stems: \(error.localizedDescription)"
+            }
+        }
+    }
 
     func startExport(to url: URL) {
         startExport([(url, project.export.aspect)])

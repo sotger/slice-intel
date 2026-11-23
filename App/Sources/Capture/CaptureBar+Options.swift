@@ -111,6 +111,23 @@ extension CaptureBar {
                 OptionToggle(kind != .device ? "Record sound from apps" : "Record the iPhone's sound", isOn: $screenAudio)
                 if screenAudio, kind != .device {
                     audioAppPicker
+                    if !audioApp.isEmpty, !isRunning(audioApp) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text("\(audioAppName.isEmpty ? audioApp : audioAppName) isn't running — recording will use all apps.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 4)
+                            Button("Use all apps") {
+                                audioApp = ""
+                                audioAppName = ""
+                            }
+                            .controlSize(.small)
+                        }
+                        .transition(.opacity)
+                    }
                 }
                 if kind != .device {
                     OptionToggle("Record keyboard", isOn: $keys.animation(.snappy))
@@ -229,6 +246,48 @@ extension CaptureBar {
         }
         audioApps = apps
         syncAudioAppName()
+    }
+
+    func isRunning(_ bundleID: String) -> Bool {
+        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleID && !$0.isTerminated }
+    }
+
+    enum AudioSourceChoice {
+        case cancel
+        case all
+        case app(id: String, name: String)
+    }
+
+    /// Shown before starting when the app picked in Options is gone: warns, and lets the take record another app
+    /// or the system mix straight away instead of failing or silently changing what is recorded.
+    @MainActor
+    func askForAudioSource(missing name: String, among content: SCShareableContent) -> AudioSourceChoice {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "\(name) isn't running"
+        alert.informativeText = "Its sound can't be recorded. Choose what this take should record instead."
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26), pullsDown: false)
+        popup.addItem(withTitle: "All apps (system mix)")
+        var seen = Set<String>()
+        let me = Bundle.main.bundleIdentifier
+        let candidates = content.applications.compactMap { app -> (id: String, name: String)? in
+            let id = app.bundleIdentifier
+            guard id != me, id != audioApp,
+                  let running = NSRunningApplication(processIdentifier: app.processID),
+                  running.activationPolicy == .regular, running.bundleURL?.pathExtension == "app" else { return nil }
+            return (id, app.applicationName)
+        }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        for app in candidates where seen.insert(app.id).inserted {
+            popup.addItem(withTitle: app.name)
+            popup.lastItem?.representedObject = app.id
+        }
+        alert.accessoryView = popup
+        alert.addButton(withTitle: "Record")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return .cancel }
+        if popup.indexOfSelectedItem <= 0 { return .all }
+        guard let id = popup.selectedItem?.representedObject as? String else { return .all }
+        return .app(id: id, name: popup.titleOfSelectedItem ?? id)
     }
 
     func syncAudioAppName() {

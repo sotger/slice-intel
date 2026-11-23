@@ -143,16 +143,14 @@ private struct DuckingSection: View {
                         "to \(Int(((1 - $0) * 100).rounded()))%"
                     }
                     .help("How far the music drops while someone speaks; the value is its level then")
-                    MoreOptions(id: "ducking") {
-                        PanelSlider("Fade down", value: $editor.project.audio.duckAttack, in: 0.05 ... 1.5, default: d.duckAttack) {
-                            String(format: "%.2fs", $0)
-                        }
-                        .help("How long the music takes to drop. It starts early, so the first word is never covered.")
-                        PanelSlider("Fade back up", value: $editor.project.audio.duckRelease, in: 0.1 ... 3, default: d.duckRelease) {
-                            String(format: "%.1fs", $0)
-                        }
-                        .help("How long the music takes to come back after speech")
+                    PanelSlider("Attack", value: $editor.project.audio.duckAttack, in: 0.05 ... 1.5, default: d.duckAttack) {
+                        String(format: "%.2fs", $0)
                     }
+                    .help("How long the music takes to drop. It starts early, so the first word is never covered.")
+                    PanelSlider("Release", value: $editor.project.audio.duckRelease, in: 0.1 ... 3, default: d.duckRelease) {
+                        String(format: "%.1fs", $0)
+                    }
+                    .help("How long the music takes to come back after speech")
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
                 PanelNote(status)

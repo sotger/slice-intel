@@ -123,6 +123,109 @@ public enum Exporter {
         return try await CompositionBuilder.build(project: project, bundle: bundle, state: state, renderSize: size, fps: fps)
     }
 
+    // MARK: - Audio stems
+
+    public struct Stem {
+        public var name: String
+        public var tracks: [CMPersistentTrackID]
+    }
+
+    /// One stem per source: the microphone, the apps' sound, the music, and each imported track.
+    public static func stems(project: Project, layout: CompositionBuilder.AudioLayout) -> [Stem] {
+        var out: [Stem] = []
+        if let mic = layout.mic { out.append(Stem(name: "Mic", tracks: [mic])) }
+        if let screen = layout.screen { out.append(Stem(name: "App", tracks: [screen])) }
+        if !layout.music.isEmpty { out.append(Stem(name: "Music", tracks: layout.music.map(\.trackID))) }
+        for imported in layout.imported {
+            let name = project.audioTracks.first { $0.id == imported.id }?.name ?? "Track"
+            out.append(Stem(name: name, tracks: [imported.trackID]))
+        }
+        return out
+    }
+
+    /// Writes every source as its own PCM WAV, aligned to the edited timeline and with the project's volumes,
+    /// fades and ducking applied — for mixing the podcast in another editor.
+    public static func exportStems(project: Project, bundle: ProjectBundle, cursor: CursorTrack, to folder: URL,
+                                   progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws -> [URL] {
+        let built = try await build(project: project, bundle: bundle, cursor: cursor, captions: [], size: project.renderSize,
+                                    fps: project.export.fps)
+        let audioTracks = try await built.composition.loadTracks(withMediaType: .audio)
+        guard !audioTracks.isEmpty else { throw Failure.failed("This project has no audio to export.") }
+        let stems = stems(project: project, layout: built.audioLayout)
+        guard !stems.isEmpty else { throw Failure.failed("This project has no audio to export.") }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var urls: [URL] = []
+        for (i, stem) in stems.enumerated() {
+            let url = folder.appendingPathComponent("\(project.name) — \(stem.name).wav")
+            try writeStem(url: url, composition: built.composition, tracks: audioTracks, target: Set(stem.tracks),
+                          mix: built.audioMix)
+            urls.append(url)
+            progress(Double(i + 1) / Double(stems.count))
+        }
+        return urls
+    }
+
+    private static func writeStem(url: URL, composition: AVComposition, tracks: [AVAssetTrack],
+                                  target: Set<CMPersistentTrackID>, mix: AVAudioMix?) throws {
+        let reader = try AVAssetReader(asset: composition)
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48000, AVNumberOfChannelsKey: 2,
+            AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVLinearPCMIsNonInterleaved: false,
+        ]
+        let output = AVAssetReaderAudioMixOutput(audioTracks: tracks, audioSettings: settings)
+        let stemMix = AVMutableAudioMix()
+        var params: [AVAudioMixInputParameters] = []
+        for track in tracks {
+            if target.contains(track.trackID) {
+                if let existing = mix?.inputParameters.first(where: { $0.trackID == track.trackID }) {
+                    params.append(existing)
+                    continue
+                }
+                let p = AVMutableAudioMixInputParameters(track: track)
+                p.setVolume(1, at: .zero)
+                params.append(p)
+            } else {
+                let p = AVMutableAudioMixInputParameters(track: track)
+                p.setVolume(0, at: .zero)
+                params.append(p)
+            }
+        }
+        stemMix.inputParameters = params
+        output.audioMix = stemMix
+        output.alwaysCopiesSampleData = true
+        reader.add(output)
+        try? FileManager.default.removeItem(at: url)
+        let file = try AVAudioFile(forWriting: url, settings: [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48000, AVNumberOfChannelsKey: 2,
+            AVLinearPCMBitDepthKey: 24, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ])
+        guard reader.startReading() else { throw Failure.failed("Couldn't read the project's audio.") }
+        while let sample = output.copyNextSampleBuffer() {
+            if let buffer = pcmBuffer(sample, format: file.processingFormat) { try file.write(from: buffer) }
+        }
+        if reader.status == .failed { throw Failure.failed(reader.error?.localizedDescription ?? "Reading the audio failed.") }
+    }
+
+    private static func pcmBuffer(_ sample: CMSampleBuffer, format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let frames = CMSampleBufferGetNumSamples(sample)
+        guard frames > 0, let block = CMSampleBufferGetDataBuffer(sample),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
+              let channels = buffer.floatChannelData else { return nil }
+        var length = 0, total = 0
+        var data: UnsafeMutablePointer<CChar>?
+        guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: &length, totalLengthOut: &total,
+                                          dataPointerOut: &data) == kCMBlockBufferNoErr, let data else { return nil }
+        buffer.frameLength = AVAudioFrameCount(frames)
+        let count = Int(format.channelCount)
+        data.withMemoryRebound(to: Float.self, capacity: frames * count) { source in
+            for channel in 0 ..< count {
+                for frame in 0 ..< frames { channels[channel][frame] = source[frame * count + channel] }
+            }
+        }
+        return buffer
+    }
+
     private static func pump(_ output: AVAssetReaderOutput, into input: AVAssetWriterInput, label: String,
                              process: ((CMSampleBuffer) -> Void)? = nil,
                              progress: @escaping @Sendable (Double) -> Void) async {

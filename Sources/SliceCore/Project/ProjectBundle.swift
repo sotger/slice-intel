@@ -207,6 +207,7 @@ public struct ProjectBundle {
     public func removeOrphanedAudio(keeping project: Project) {
         var keep = Set<String>()
         for clip in project.music { if case let .file(rel) = clip.source { keep.insert(rel) } }
+        for track in project.audioTracks { for clip in track.clips { keep.insert(clip.source) } }
         for rel in importedAudio() where !keep.contains(rel) { try? FileManager.default.removeItem(at: file(rel)) }
     }
 }

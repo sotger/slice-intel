@@ -26,6 +26,7 @@ public struct Project: Codable, Equatable {
     public var cursor: CursorSettings
     public var keystrokes: KeystrokeSettings
     public var music: [MusicClip]
+    public var audioTracks: [AudioTrack]
     public var audio: AudioSettings
     public var voice: VoiceSettings
     public var autoZoom: AutoZoomSettings
@@ -53,6 +54,7 @@ public struct Project: Codable, Equatable {
         cursor = CursorSettings()
         keystrokes = KeystrokeSettings()
         music = []
+        audioTracks = []
         audio = AudioSettings()
         voice = VoiceSettings()
         autoZoom = AutoZoomSettings()
@@ -85,6 +87,7 @@ public struct Project: Codable, Equatable {
         cursor = try c.decodeIfPresent(CursorSettings.self, forKey: .cursor) ?? d.cursor
         keystrokes = try c.decodeIfPresent(KeystrokeSettings.self, forKey: .keystrokes) ?? d.keystrokes
         music = try c.decodeIfPresent([MusicClip].self, forKey: .music) ?? []
+        audioTracks = try c.decodeIfPresent([AudioTrack].self, forKey: .audioTracks) ?? []
         audio = try c.decodeIfPresent(AudioSettings.self, forKey: .audio) ?? d.audio
         voice = try c.decodeIfPresent(VoiceSettings.self, forKey: .voice) ?? d.voice
         autoZoom = try c.decodeIfPresent(AutoZoomSettings.self, forKey: .autoZoom) ?? d.autoZoom

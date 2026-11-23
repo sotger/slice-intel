@@ -98,16 +98,26 @@ final class Recorder: NSObject, @unchecked Sendable {
         config.colorSpaceName = CGColorSpace.sRGB
         config.showsCursor = false
         config.queueDepth = 8
-        config.capturesAudio = settings.screenAudio && settings.audioApp == nil
+        // The chosen app can be gone since it was picked (quit, or its driver unloaded). Recording from nothing
+        // would leave the take without any app sound, so fall back to the system mix instead of refusing to record.
+        var perApp = settings.screenAudio ? settings.audioApp : nil
+        if let app = perApp {
+            let content = try? await SourceResolver.shareableContent()
+            if let content, !content.applications.contains(where: { $0.bundleIdentifier == app }) {
+                log.warning("The chosen app is not running; recording the system mix instead")
+                perApp = nil
+            }
+        }
+        config.capturesAudio = settings.screenAudio && perApp == nil
         config.excludesCurrentProcessAudio = true
         config.sampleRate = 48000
         config.channelCount = 2
         let stream = SCStream(filter: resolved.filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
-        if settings.screenAudio, settings.audioApp == nil { try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue) }
+        if settings.screenAudio, perApp == nil { try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue) }
         try await stream.startCapture()
         self.stream = stream
-        if settings.screenAudio, let app = settings.audioApp {
+        if let app = perApp {
             audioStream = try await appAudioStream(app, named: settings.audioAppName ?? app)
         }
         let source = settings.source

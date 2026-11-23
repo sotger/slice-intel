@@ -7,6 +7,7 @@
 
 import AVFoundation
 import CoreImage
+import Foundation
 
 public enum CompositionBuilder {
     public struct Result {
@@ -24,11 +25,18 @@ public enum CompositionBuilder {
             public var trackID: CMPersistentTrackID
         }
 
+        /// An imported audio track's own composition track, so its volume can be changed without rebuilding.
+        public struct Imported: Equatable, Sendable {
+            public var id: UUID
+            public var trackID: CMPersistentTrackID
+        }
+
         public var mic: CMPersistentTrackID?
         public var originalVoice: CMPersistentTrackID?
         public var screen: CMPersistentTrackID?
         public var joins: [Double]
         public var music: [Music]
+        public var imported: [Imported] = []
         public var clicks: [CMPersistentTrackID] = []
         public var keys: [CMPersistentTrackID] = []
 
@@ -56,6 +64,10 @@ public enum CompositionBuilder {
         for m in layout.music {
             let lane = lanes.first { $0.clipID == m.clipID && $0.lane == m.lane }
             params.append(parameters(m.trackID, lane?.envelope ?? .constant(0)))
+        }
+        for imported in layout.imported {
+            guard let track = project.audioTracks.first(where: { $0.id == imported.id }) else { continue }
+            params.append(parameters(imported.trackID, project.audioTrackEnvelope(track)))
         }
         let clickLevel = project.cursor.clickSound == .none ? 0 : min(max(project.cursor.clickSoundVolume, 0), 1)
         for id in layout.clicks { params.append(parameters(id, .constant(clickLevel))) }
@@ -157,6 +169,7 @@ public enum CompositionBuilder {
             if track === micTrack { layout.mic = nil } else if track === screenAudioTrack { layout.screen = nil } else { layout.originalVoice = nil }
         }
         layout.music = await insertMusic(project: project, bundle: bundle, into: comp, end: cursor)
+        layout.imported = await insertAudioTracks(project: project, bundle: bundle, into: comp, end: cursor)
         let timeline = state.current().cursor
         layout.clicks = await insertClicks(project.cursor.clickSound, at: timeline.clicks.map(\.t), into: comp, end: cursor)
         layout.keys = await insertKeys(project.keystrokes.sound, hits: timeline.keyHits, into: comp, end: cursor)
@@ -185,6 +198,46 @@ public enum CompositionBuilder {
         vc.instructions = [ProjectInstruction(timeRange: total, screenTrackID: screenTrack.trackID,
                                               cameraTrackID: cameraID, state: state, packing: packing)]
         return Result(composition: comp, videoComposition: vc, audioMix: audioMix, audioLayout: layout, packing: packing)
+    }
+
+    private static func insertAudioTracks(project: Project, bundle: ProjectBundle, into comp: AVMutableComposition,
+                                          end: CMTime) async -> [AudioLayout.Imported] {
+        var out: [AudioLayout.Imported] = []
+        let scale: CMTimeScale = 48000
+        for track in project.audioTracks {
+            guard let destination = comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+            else { continue }
+            var used = false
+            var assets: [AVURLAsset] = []
+            for clip in track.clips.sorted(by: { $0.start < $1.start }) {
+                let url = bundle.file(clip.source)
+                guard FileManager.default.fileExists(atPath: url.path) else { continue }
+                // Compressed audio only cuts at exact times with precise timing.
+                let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+                assets.append(asset)
+                do {
+                    guard let source = try await asset.loadTracks(withMediaType: .audio).first else { continue }
+                    let available = try await source.load(.timeRange)
+                    let at = CMTime(seconds: clip.start, preferredTimescale: scale)
+                    let from = available.start + CMTime(seconds: clip.offset, preferredTimescale: scale)
+                    let wanted = CMTime(seconds: max(clip.end - clip.start, 0), preferredTimescale: scale)
+                    let len = CMTimeMinimum(CMTimeMinimum(wanted, end - at), available.end - from)
+                    guard at >= .zero, len > .zero else { continue }
+                    if at > destination.timeRange.end { destination.insertEmptyTimeRange(CMTimeRange(start: destination.timeRange.end, end: at)) }
+                    try destination.insertTimeRange(CMTimeRange(start: from, duration: len), of: source, at: at)
+                    used = true
+                } catch {
+                    NSLog("Audio \(clip.source) left out: \(error)")
+                }
+            }
+            if used {
+                out.append(AudioLayout.Imported(id: track.id, trackID: destination.trackID))
+            } else {
+                comp.removeTrack(destination)
+            }
+            withExtendedLifetime(assets) {}
+        }
+        return out
     }
 
     private static func insertMusic(project: Project, bundle: ProjectBundle, into comp: AVMutableComposition,

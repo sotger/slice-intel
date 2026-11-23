@@ -17,6 +17,7 @@ struct EditorView: View {
     @State private var showPalette = false
     @State private var toast: (id: UUID, title: String, keys: [String])?
     @AppStorage("sidePanel.tab") private var inspectorTab = InspectorTab.frame.rawValue
+    @AppStorage("editor.timelineHeight") private var timelineHeight = 334.0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -53,8 +54,9 @@ struct EditorView: View {
             .padding(.trailing, 14)
             .padding(.top, 8)
             .padding(.bottom, 10)
+            TimelineSplitter(height: $timelineHeight)
             TimelineView(editor: editor, zoom: $timelineZoom)
-                .frame(height: 334 + (editor.shows3DTrack ? 46 : 0) + (editor.hasAnnotations ? 46 : 0))
+                .frame(height: timelineHeight + (editor.shows3DTrack ? 46 : 0) + (editor.hasAnnotations ? 46 : 0))
                 .animation(Theme.slide, value: editor.shows3DTrack)
                 .animation(Theme.slide, value: editor.hasAnnotations)
         }
